@@ -12,7 +12,6 @@ import * as db from "../db";
 import { sdk } from "./sdk";
 import { handleStripeWebhook } from "../stripe";
 import { createContext } from "./context";
-import { serveStatic, setupVite } from "./vite";
 
 export async function createApp(options: { serveClient?: boolean; server?: Server } = {}) {
   const app = express();
@@ -178,8 +177,12 @@ export async function createApp(options: { serveClient?: boolean; server?: Serve
   // Netlify serves the Vite output from its CDN; the standalone server serves it locally.
   if (shouldServeClient) {
     if (process.env.NODE_ENV === "development") {
+      const viteModule = "./" + "vite";
+      const { setupVite } = await import(viteModule);
       await setupVite(app, options.server ?? createServer(app));
     } else {
+      const viteModule = "./" + "vite";
+      const { serveStatic } = await import(viteModule);
       serveStatic(app);
     }
   }
