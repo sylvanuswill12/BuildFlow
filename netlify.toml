@@ -9,13 +9,15 @@
   PNPM_VERSION = "10.18.0"
 
 [functions]
+  external_node_modules = ["express", "serverless-http"]
   node_bundler = "esbuild"
   included_files = ["drizzle/**", "shared/**"]
 
 # The function receives the original /api/... path so Express and tRPC keep their routes.
 [[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api/api/:splat"
+  force = true
+  to = "/.netlify/functions/api/:splat"
   status = 200
 
 # Let the Vite SPA handle client-side routes.

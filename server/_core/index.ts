@@ -1,21 +1,20 @@
 import "dotenv/config";
 import express from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { z } from "zod";
 import { registerOAuthRoutes } from "./oauth";
 import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
-import { streamConfiguredLLM, AI_PROVIDER_IDS } from "../aiProviders";
+import { streamConfiguredLLM, AI_PROVIDER_IDS, listAiProviders } from "../aiProviders";
 import { parseGeneratedChange } from "../generation";
 import * as db from "../db";
 import { sdk } from "./sdk";
 import { handleStripeWebhook } from "../stripe";
 import { createContext } from "./context";
 
-export async function createApp(options: { serveClient?: boolean; server?: Server } = {}) {
+export async function createApp(_options: { server?: Server } = {}) {
   const app = express();
-  const shouldServeClient = options.serveClient ?? true;
   app.use((_req, res, next) => {
     // WebContainer requires a cross-origin isolated browsing context. The
     // credentialless mode remains compatible with the Cloud Preview iframe.
@@ -35,7 +34,28 @@ export async function createApp(options: { serveClient?: boolean; server?: Serve
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", async (req, res) => {
+    const deep = req.query.deep === "1";
+    const configuredAi = listAiProviders()
+      .filter(provider => provider.configured)
+      .map(provider => provider.id);
+    const checks = {
+      api: true,
+      database: deep ? await db.checkDatabase() : Boolean(process.env.DATABASE_URL),
+      auth: Boolean(process.env.MANUS_PROJECT_ID && process.env.MANUS_JWT_SECRET),
+      oauth: Boolean(
+        process.env.MANUS_OAUTH_API_URL && process.env.MANUS_OAUTH_PORTAL_URL
+      ),
+      ai: configuredAi.length > 0,
+    };
+    res.json({
+      status: "ok",
+      ready: Object.values(checks).every(Boolean),
+      checks,
+      configuredAi,
+      deep,
+    });
+  });
   app.post("/api/generation/change-stream", async (req, res) => {
     let user;
     try {
@@ -174,31 +194,5 @@ export async function createApp(options: { serveClient?: boolean; server?: Serve
       createContext,
     })
   );
-  // Netlify serves the Vite output from its CDN; the standalone server serves it locally.
-  if (shouldServeClient) {
-    if (process.env.NODE_ENV === "development") {
-      const viteModule = "./" + "vite";
-      const { setupVite } = await import(viteModule);
-      await setupVite(app, options.server ?? createServer(app));
-    } else {
-      const viteModule = "./" + "vite";
-      const { serveStatic } = await import(viteModule);
-      serveStatic(app);
-    }
-  }
   return app;
-}
-
-async function startServer() {
-  const server = createServer();
-  const app = await createApp({ server });
-  server.on("request", app);
-  const port = Number(process.env.PORT || "3000");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
-  server.on("error", error => { console.error("Server failed:", error.message); process.exit(1); });
-  server.listen(port, "0.0.0.0", () => console.log(`Server listening on port ${port}`));
-}
-
-if (process.env.NETLIFY !== "true") {
-  startServer().catch(error => { console.error(error); process.exit(1); });
 }

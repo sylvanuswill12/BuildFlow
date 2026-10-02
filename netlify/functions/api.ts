@@ -7,7 +7,7 @@ let handlerPromise: Promise<FunctionHandler> | undefined;
 async function getHandler(): Promise<FunctionHandler> {
   if (!handlerPromise) {
     process.env.NODE_ENV = "production";
-    const app = await createApp({ serveClient: false });
+    const app = await createApp();
     handlerPromise = Promise.resolve(serverless(app, { requestId: "x-nf-request-id" }));
   }
   return handlerPromise;

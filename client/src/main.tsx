@@ -84,7 +84,9 @@ const trpcClient = trpc.createClient({
 });
 
 async function bootstrap() {
-  await loadPublicPlatformConfig();
+  // The public config is optional. Do not block the whole UI when a serverless
+  // function is cold, unavailable, or not configured yet.
+  void loadPublicPlatformConfig();
   createRoot(document.getElementById("root")!).render(
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
       <QueryClientProvider client={queryClient}>

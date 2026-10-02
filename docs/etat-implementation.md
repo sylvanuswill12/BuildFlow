@@ -15,6 +15,7 @@
 - L’écran `Paramètres` affiche un pré-contrôle Vercel, Netlify et Cloudflare Pages sans exposer les secrets et sans déclarer un projet publié à tort.
 - Le bouton `Publier` utilise maintenant la mutation serveur de déploiement : Netlify par ZIP, Vercel par upload SHA + création REST, et Cloudflare Pages via Wrangler pour le bundle pré-buildé.
 - Le projet n’est marqué `Publié` qu’après confirmation `ready` du fournisseur ; les erreurs et l’URL du dernier déploiement sont persistées.
+- La cible Netlify sépare maintenant l’entrée Express locale de l’entrée Netlify Function, utilise la redirection officielle `/.netlify/functions/api/:splat` et expose `/api/health?deep=1` pour diagnostiquer API, base, session, OAuth et provider IA sans révéler les secrets.
 - Le serveur conserve la route de santé publique `/api/health`.
 
 ## Vérifications effectuées
@@ -27,6 +28,7 @@
 - `/api/generation/stream` : événements SSE de progression vérifiés.
 - `/api/generation/change-stream` : réponse 401 sans session et maintien de `/api/health` vérifiés.
 - Garde-fous déploiement : 2 tests unitaires dédiés, dont le refus d’un projet source-only sans `index.html`.
+- Runtime Netlify : handler testé directement avec HTTP 200 sur `/api/health`, bundle Function contrôlé sans Vite/Tailwind/LightningCSS, serveur production local et `/api/generation/change-stream` 401 sans session vérifiés.
 
 ## Configuration nécessaire en production
 
