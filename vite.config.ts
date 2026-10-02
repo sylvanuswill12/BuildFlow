@@ -195,30 +195,10 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (/[\\/]react(?:-dom)?[\\/]/.test(id) || id.includes("scheduler"))
-            return "vendor-react";
-          if (
-            id.includes("lucide-react") ||
-            id.includes("motion") ||
-            id.includes("sonner")
-          )
-            return "vendor-interface";
-          if (
-            id.includes("@trpc") ||
-            id.includes("@tanstack") ||
-            id.includes("superjson") ||
-            id.includes("zod")
-          )
-            return "vendor-data";
-          if (id.includes("@radix-ui")) return "vendor-radix";
-          return "vendor";
-        },
-      },
-    },
+    // Keep React and its peer dependencies in Vite's default graph. The previous
+    // hand-written vendor split caused React 19's Activity export to initialize
+    // against a different module instance on Netlify, leaving #root empty.
+    rollupOptions: {},
   },
   server: {
     host: true,
