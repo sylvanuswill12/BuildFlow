@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD CONSTRAINT `projects_owner_fk` FOREIGN KEY (`ownerId`) REFERENCES `users`(`id`) ON DELETE no action ON UPDATE no action;

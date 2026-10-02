@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `creditsResetAt` timestamp DEFAULT (now()) NOT NULL;

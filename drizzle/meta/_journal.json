@@ -1,0 +1,69 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1788785580464,
+      "tag": "0000_initial_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1790802685737,
+      "tag": "0001_clammy_oracle",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790803239238,
+      "tag": "0002_mighty_bushwacker",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1790810487000,
+      "tag": "0003_brainy_meltdown",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1790810731006,
+      "tag": "0004_violet_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1790820309124,
+      "tag": "0005_fine_dexter_bennett",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1790820493337,
+      "tag": "0006_loose_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1790820702286,
+      "tag": "0007_deep_raza",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1790825466626,
+      "tag": "0008_neat_brother_voodoo",
+      "breakpoints": true
+    }
+  ]
+}
