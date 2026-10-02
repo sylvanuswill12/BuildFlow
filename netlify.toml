@@ -9,7 +9,6 @@
   PNPM_VERSION = "10.18.0"
 
 [functions]
-  external_node_modules = ["express", "serverless-http"]
   node_bundler = "esbuild"
   included_files = ["drizzle/**", "shared/**"]
 
