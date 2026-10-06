@@ -1,10 +1,11 @@
-import { invokeLLM, type InvokeParams, type InvokeResult } from "./_core/llm";
+import type { FileContent, ImageContent, InvokeParams, InvokeResult, TextContent } from "./aiTypes";
 
 export const AI_PROVIDER_IDS = [
-  "manus",
   "openai",
+  "anthropic",
   "google",
   "openrouter",
+  "omniroute",
   "groq",
   "deepseek",
   "mistral",
@@ -24,19 +25,10 @@ type ProviderDefinition = {
   defaultModel: string;
   models: string[];
   requiresKey: boolean;
+  supportsVision: boolean;
 };
 
 const providerDefinitions: ProviderDefinition[] = [
-  {
-    id: "manus",
-    label: "BuildFlow AI",
-    description: "Proxy IA sécurisé de la plateforme BuildFlow",
-    baseUrlEnv: "MANUS_API_URL",
-    apiKeyEnv: "MANUS_API_KEY",
-    defaultModel: "platform-default",
-    models: ["platform-default"],
-    requiresKey: true,
-  },
   {
     id: "openai",
     label: "OpenAI",
@@ -46,6 +38,18 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "gpt-4o-mini",
     models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
     requiresKey: true,
+    supportsVision: true,
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic Claude",
+    description: "Claude via l’API native Messages et son flux SSE",
+    baseUrl: "https://api.anthropic.com/v1",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    defaultModel: "claude-sonnet-5-5",
+    models: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5"],
+    requiresKey: true,
+    supportsVision: true,
   },
   {
     id: "google",
@@ -56,6 +60,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "gemini-2.0-flash",
     models: ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
     requiresKey: true,
+    supportsVision: true,
   },
   {
     id: "openrouter",
@@ -70,6 +75,18 @@ const providerDefinitions: ProviderDefinition[] = [
       "google/gemini-2.0-flash-001",
     ],
     requiresKey: true,
+    supportsVision: true,
+  },
+  {
+    id: "omniroute",
+    label: "OmniRoute",
+    description: "Passerelle auto-hébergée avec routage automatique des modèles",
+    baseUrlEnv: "OMNIROUTE_API_BASE_URL",
+    apiKeyEnv: "OMNIROUTE_API_KEY",
+    defaultModel: "auto",
+    models: ["auto"],
+    requiresKey: true,
+    supportsVision: true,
   },
   {
     id: "groq",
@@ -80,6 +97,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "llama-3.3-70b-versatile",
     models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
     requiresKey: true,
+    supportsVision: false,
   },
   {
     id: "deepseek",
@@ -90,6 +108,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "deepseek-chat",
     models: ["deepseek-chat", "deepseek-reasoner"],
     requiresKey: true,
+    supportsVision: false,
   },
   {
     id: "mistral",
@@ -100,6 +119,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "mistral-small-latest",
     models: ["mistral-small-latest", "codestral-latest"],
     requiresKey: true,
+    supportsVision: false,
   },
   {
     id: "ollama",
@@ -110,6 +130,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "llama3.2",
     models: ["llama3.2", "qwen2.5-coder:7b", "deepseek-coder-v2"],
     requiresKey: false,
+    supportsVision: false,
   },
   {
     id: "openai-compatible",
@@ -120,6 +141,7 @@ const providerDefinitions: ProviderDefinition[] = [
     defaultModel: "default",
     models: ["default"],
     requiresKey: false,
+    supportsVision: false,
   },
 ];
 
@@ -139,6 +161,11 @@ const configured = (provider: ProviderDefinition) => {
   return hasBaseUrl && (provider.requiresKey ? hasKey : true);
 };
 
+export function defaultConfiguredAiProvider(): AiProviderId {
+  const preferred: AiProviderId[] = ["omniroute", "openai", "anthropic", "google", "openrouter", "groq", "mistral", "deepseek", "ollama", "openai-compatible"];
+  return preferred.find(id => configured(definitionFor(id))) ?? "openai";
+}
+
 export function listAiProviders() {
   return providerDefinitions.map(provider => ({
     id: provider.id,
@@ -148,6 +175,7 @@ export function listAiProviders() {
     defaultModel: provider.defaultModel,
     models: provider.models,
     requiresKey: provider.requiresKey,
+    supportsVision: provider.supportsVision,
   }));
 }
 
@@ -161,17 +189,62 @@ export function listAiModels(providerId: AiProviderId) {
   };
 }
 
+type ContentPart = TextContent | ImageContent | FileContent;
+type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+type AnthropicBlock = { type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
 function normalizeMessageContent(
   content: InvokeParams["messages"][number]["content"]
-) {
+): string | ContentPart | ContentPart[] {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content.map(part => {
-      if (typeof part === "string") return { type: "text", text: part };
+      if (typeof part === "string") return { type: "text" as const, text: part };
       return part;
     });
   }
   return content;
+}
+
+function contentParts(content: InvokeParams["messages"][number]["content"]): ContentPart[] {
+  const normalized = normalizeMessageContent(content);
+  if (typeof normalized === "string") return [{ type: "text", text: normalized }];
+  return Array.isArray(normalized) ? normalized as ContentPart[] : [normalized as ContentPart];
+}
+
+function dataUrlImage(url: string) {
+  const match = url.match(/^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/]+=*)$/i);
+  return match ? { mimeType: match[1]!, data: match[2]! } : null;
+}
+
+export function toGeminiParts(content: InvokeParams["messages"][number]["content"]): GeminiPart[] {
+  const result: GeminiPart[] = [];
+  for (const part of contentParts(content)) {
+    if (part.type === "text") result.push({ text: part.text });
+    if (part.type === "image_url") {
+      const image = dataUrlImage(part.image_url.url);
+      if (image) result.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+    }
+    if (part.type === "file_url") result.push({ text: `[Fichier joint : ${part.file_url.url}]` });
+  }
+  return result;
+}
+
+export function toAnthropicContent(content: InvokeParams["messages"][number]["content"]): AnthropicBlock[] {
+  const result: AnthropicBlock[] = [];
+  for (const part of contentParts(content)) {
+    if (part.type === "text") result.push({ type: "text", text: part.text });
+    if (part.type === "image_url") {
+      const image = dataUrlImage(part.image_url.url);
+      if (image) result.push({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } });
+    }
+    if (part.type === "file_url") result.push({ type: "text", text: `[Fichier joint : ${part.file_url.url}]` });
+  }
+  return result;
+}
+
+function messageText(content: InvokeParams["messages"][number]["content"]) {
+  return contentParts(content).flatMap(part => typeof part === "object" && "text" in part ? [part.text] : []).join("\n");
 }
 
 async function invokeOpenAiCompatible(
@@ -190,6 +263,7 @@ async function invokeOpenAiCompatible(
     "content-type": "application/json",
   };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  if (providerId === "omniroute") headers["X-OmniRoute-No-Cache"] = "true";
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
@@ -198,7 +272,7 @@ async function invokeOpenAiCompatible(
       {
         method: "POST",
         headers,
-        signal: controller.signal,
+        signal: params.signal ?? controller.signal,
         body: JSON.stringify({
           model: params.model || provider.defaultModel,
           messages: params.messages.map(message => ({
@@ -240,14 +314,12 @@ async function invokeGemini(params: InvokeParams): Promise<InvokeResult> {
   const model = params.model || provider.defaultModel;
   const systemParts = params.messages
     .filter(message => message.role === "system")
-    .map(message => ({
-      text: String(normalizeMessageContent(message.content)),
-    }));
+    .map(message => ({ text: messageText(message.content) }));
   const contents = params.messages
     .filter(message => message.role !== "system")
     .map(message => ({
       role: message.role === "assistant" ? "model" : "user",
-      parts: [{ text: String(normalizeMessageContent(message.content)) }],
+      parts: toGeminiParts(message.content),
     }));
   const schema = params.outputSchema || params.output_schema;
   const controller = new AbortController();
@@ -258,7 +330,7 @@ async function invokeGemini(params: InvokeParams): Promise<InvokeResult> {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        signal: controller.signal,
+        signal: params.signal ?? controller.signal,
         body: JSON.stringify({
           ...(systemParts.length
             ? { systemInstruction: { parts: systemParts } }
@@ -322,23 +394,67 @@ async function invokeGemini(params: InvokeParams): Promise<InvokeResult> {
   }
 }
 
+async function invokeAnthropic(params: InvokeParams): Promise<InvokeResult> {
+  const provider = definitionFor("anthropic");
+  const apiKey = envValue(provider.apiKeyEnv);
+  if (!apiKey) throw new Error("La clé ANTHROPIC_API_KEY est manquante.");
+  const system = params.messages.filter(message => message.role === "system")
+    .map(message => messageText(message.content)).join("\n\n");
+  const messages = params.messages.filter(message => message.role !== "system")
+    .map(message => ({ role: message.role === "assistant" ? "assistant" : "user", content: toAnthropicContent(message.content) }));
+  const response = await fetch(`${provider.baseUrl}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": apiKey },
+    signal: params.signal,
+    body: JSON.stringify({ model: params.model || provider.defaultModel, max_tokens: params.maxTokens ?? params.max_tokens ?? 12_000, ...(system ? { system } : {}), messages, stream: false }),
+  });
+  if (!response.ok) throw new Error(`Anthropic a répondu ${response.status}: ${(await response.text()).slice(0, 500)}`);
+  const data = await response.json() as { id?: string; model?: string; content?: Array<{ type?: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
+  const text = data.content?.filter(block => block.type === "text").map(block => block.text ?? "").join("\n") ?? "";
+  const promptTokens = data.usage?.input_tokens ?? 0;
+  const completionTokens = data.usage?.output_tokens ?? 0;
+  return {
+    id: data.id ?? `anthropic-${Date.now()}`,
+    created: Math.floor(Date.now() / 1000),
+    model: data.model ?? params.model ?? provider.defaultModel,
+    choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+    usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+  };
+}
+
 export async function invokeConfiguredLLM(
-  providerId: AiProviderId = "manus",
+  providerId: AiProviderId = "openai",
   params: InvokeParams
 ): Promise<InvokeResult> {
-  if (providerId === "manus") return invokeLLM(params);
   if (providerId === "google") return invokeGemini(params);
+  if (providerId === "anthropic") return invokeAnthropic(params);
   return invokeOpenAiCompatible(providerId, params);
 }
 
 export async function* streamConfiguredLLM(
-  providerId: AiProviderId = "manus",
+  providerId: AiProviderId = "openai",
   params: InvokeParams
 ): AsyncGenerator<string> {
-  if (providerId === "manus") {
-    const result = await invokeLLM(params);
-    const content = result.choices[0]?.message.content;
-    yield typeof content === "string" ? content : JSON.stringify(content ?? "");
+
+  if (providerId === "anthropic") {
+    const provider = definitionFor("anthropic");
+    const apiKey = envValue(provider.apiKeyEnv);
+    if (!apiKey) throw new Error("La clé ANTHROPIC_API_KEY est manquante.");
+    const system = params.messages.filter(message => message.role === "system")
+      .map(message => messageText(message.content)).join("\n\n");
+    const messages = params.messages.filter(message => message.role !== "system")
+      .map(message => ({ role: message.role === "assistant" ? "assistant" : "user", content: toAnthropicContent(message.content) }));
+    const response = await fetch(`${provider.baseUrl}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": apiKey },
+      signal: params.signal,
+      body: JSON.stringify({ model: params.model || provider.defaultModel, max_tokens: params.maxTokens ?? params.max_tokens ?? 12_000, ...(system ? { system } : {}), messages, stream: true }),
+    });
+    if (!response.ok) throw new Error(`Anthropic a répondu ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    yield* parseSseText(response, chunk => {
+      const event = chunk as { type?: string; delta?: { type?: string; text?: string } };
+      return event.type === "content_block_delta" && event.delta?.type === "text_delta" ? event.delta.text ?? "" : "";
+    });
     return;
   }
 
@@ -347,16 +463,17 @@ export async function* streamConfiguredLLM(
     const apiKey = envValue(provider.apiKeyEnv);
     if (!apiKey) throw new Error("La clé GOOGLE_GENERATIVE_AI_API_KEY est manquante.");
     const model = params.model || provider.defaultModel;
-    const systemParts = params.messages.filter(message => message.role === "system").map(message => ({ text: String(normalizeMessageContent(message.content)) }));
+    const systemParts = params.messages.filter(message => message.role === "system").map(message => ({ text: messageText(message.content) }));
     const contents = params.messages.filter(message => message.role !== "system").map(message => ({
       role: message.role === "assistant" ? "model" : "user",
-      parts: [{ text: String(normalizeMessageContent(message.content)) }],
+      parts: toGeminiParts(message.content),
     }));
     const response = await fetch(
       `${provider.baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: params.signal,
         body: JSON.stringify({
           ...(systemParts.length ? { systemInstruction: { parts: systemParts } } : {}),
           contents,
@@ -382,7 +499,12 @@ export async function* streamConfiguredLLM(
   if (provider.requiresKey && !apiKey) throw new Error(`La clé ${provider.apiKeyEnv} est manquante.`);
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      ...(providerId === "omniroute" ? { "X-OmniRoute-No-Cache": "true" } : {}),
+    },
+    signal: params.signal,
     body: JSON.stringify({
       model: params.model || provider.defaultModel,
       messages: params.messages.map(message => ({ role: message.role, content: normalizeMessageContent(message.content) })),

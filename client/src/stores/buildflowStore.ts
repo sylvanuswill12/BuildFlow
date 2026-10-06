@@ -6,7 +6,8 @@ export type WorkspaceTab =
   | "Composants"
   | "Données"
   | "Équipe IA"
-  | "Historique";
+  | "Historique"
+  | "Diff";
 
 type BuildFlowStore = {
   rightTab: WorkspaceTab;

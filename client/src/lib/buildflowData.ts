@@ -1,3 +1,5 @@
+import type { UploadedImage } from "@shared/attachments";
+
 export type ProjectStatus = "Brouillon" | "En cours" | "Publié" | "Archivé";
 
 export type Project = {
@@ -37,6 +39,7 @@ export type ChatMessage = {
   content: string;
   time: string;
   changes?: string[];
+  attachments?: UploadedImage[];
 };
 
 export const demoProjects: Project[] = [
@@ -185,12 +188,36 @@ export const fileTree = [
 ] as const;
 
 export const codeSnippets: Record<string, string> = {
-  "page.tsx": `import { DashboardCard } from "@/components/DashboardCard";\nimport { ExpenseChart } from "@/components/ExpenseChart";\n\nexport default function DashboardPage() {\n  return (\n    <main className="space-y-8">\n      <header>\n        <p className="text-sm text-muted">Vue d'ensemble</p>\n        <h1 className="text-3xl font-semibold">Bonjour, Alex</h1>\n      </header>\n\n      <section className="grid gap-4 md:grid-cols-3">\n        <DashboardCard label="Dépenses ce mois" value="2 480 €" />\n        <DashboardCard label="Budget restant" value="1 240 €" />\n        <DashboardCard label="Épargne" value="680 €" />\n      </section>\n\n      <ExpenseChart />\n    </main>\n  );\n}`,
-  "layout.tsx": `import type { ReactNode } from "react";\nimport { Sidebar } from "@/components/Sidebar";\n\nexport default function RootLayout({ children }: { children: ReactNode }) {\n  return (\n    <div className="min-h-screen bg-slate-950 text-slate-50">\n      <Sidebar />\n      <div className="lg:pl-64">{children}</div>\n    </div>\n  );\n}`,
-  "ExpenseChart.tsx": `const points = [42, 58, 48, 75, 62, 84, 73, 91, 68, 78, 64, 88];\n\nexport function ExpenseChart() {\n  return (\n    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">\n      <div className="mb-6 flex items-center justify-between">\n        <h2 className="font-medium">Dépenses mensuelles</h2>\n        <span className="text-sm text-emerald-400">-8,4%</span>\n      </div>\n      <div className="flex h-48 items-end gap-2">\n        {points.map((height, index) => (\n          <div key={index} className="flex-1 rounded-t bg-blue-500/70" style={{ height: height + "%" }} />\n        ))}\n      </div>\n    </div>\n  );\n}`,
-  "package.json": `{"name":"expense-flow","private":true,"scripts":{"dev":"vite"},"dependencies":{"react":"latest","recharts":"latest"}}`,
-  "utils.ts": `export const formatCurrency = (value: number) =>\n  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);`,
-  "README.md": `# Expense Flow\n\nApplication de gestion de dépenses générée avec BuildFlow AI.\n\n## Démarrer\n\npnpm install\npnpm dev`,
+  "src/App.tsx": `import { useState } from "react";
+
+export default function App() {
+  const [tasks, setTasks] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+  const addTask = () => {
+    const task = draft.trim();
+    if (!task) return;
+    setTasks(current => [...current, task]);
+    setDraft("");
+  };
+  return (
+    <main style={{ maxWidth: 640, margin: "60px auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
+      <p style={{ color: "#64748b" }}>BuildFlow starter</p>
+      <h1>Votre application commence ici</h1>
+      <form onSubmit={event => { event.preventDefault(); addTask(); }} style={{ display: "flex", gap: 8 }}>
+        <input value={draft} onChange={event => setDraft(event.target.value)} placeholder="Ajouter un élément" style={{ flex: 1, padding: 12 }} />
+        <button type="submit">Ajouter</button>
+      </form>
+      <ul>{tasks.map((task, index) => <li key={index}>{task}</li>)}</ul>
+    </main>
+  );
+}`,
+  "src/styles/globals.css": `@import "tailwindcss";
+
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #0f172a; background: #f8fafc; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+* { box-sizing: border-box; }`,
+  "package.json": JSON.stringify({ name: "buildflow-project", private: true, version: "0.0.0", type: "module", scripts: { dev: "vite" }, dependencies: { react: "^19.2.1", "react-dom": "^19.2.1" }, devDependencies: { vite: "^7.1.9", "@vitejs/plugin-react": "^5.0.4", typescript: "^5.9.3", tailwindcss: "^4.1.14", "@tailwindcss/vite": "^4.1.14" } }, null, 2),
+  "index.html": `<!doctype html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mon application</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`,
 };
 
 export const initialMessages: ChatMessage[] = [

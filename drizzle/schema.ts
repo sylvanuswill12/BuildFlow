@@ -1,7 +1,9 @@
 import {
+  customType,
   foreignKey,
   index,
   int,
+  json,
   mediumtext,
   mysqlEnum,
   mysqlTable,
@@ -10,15 +12,19 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core";
 
+const mediumBlob = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "mediumblob",
+});
+
 /**
  * Core user table backing auth flow and BuildFlow entitlements.
  */
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
+  authId: varchar("authId", { length: 64 }).unique(),
   name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
+  email: varchar("email", { length: 320 }).unique(),
+  passwordHash: varchar("passwordHash", { length: 255 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   plan: mysqlEnum("plan", ["free", "pro", "team"]).default("free").notNull(),
   credits: int("credits").default(20).notNull(),
@@ -80,6 +86,134 @@ export const projects = mysqlTable(
 );
 export type Project = typeof projects.$inferSelect;
 export type InsertProject = typeof projects.$inferInsert;
+
+export const aiUsage = mysqlTable(
+  "ai_usage",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    ownerId: int("ownerId").notNull(),
+    projectId: varchar("projectId", { length: 64 }),
+    provider: varchar("provider", { length: 48 }).notNull(),
+    model: varchar("model", { length: 160 }).notNull(),
+    complexity: mysqlEnum("complexity", ["low", "medium", "high"]).notNull(),
+    inputTokens: int("inputTokens").notNull(),
+    outputTokens: int("outputTokens").notNull(),
+    totalTokens: int("totalTokens").notNull(),
+    estimatedCostMicros: int("estimatedCostMicros").notNull(),
+    tokenCountsEstimated: int("tokenCountsEstimated").default(1).notNull(),
+    latencyMs: int("latencyMs").notNull(),
+    fallbackFrom: varchar("fallbackFrom", { length: 48 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    ownerIdx: index("ai_usage_owner_idx").on(table.ownerId),
+    projectIdx: index("ai_usage_project_idx").on(table.projectId),
+    createdIdx: index("ai_usage_created_idx").on(table.createdAt),
+    ownerFk: foreignKey({
+      columns: [table.ownerId],
+      foreignColumns: [users.id],
+      name: "ai_usage_owner_fk",
+    }),
+    projectFk: foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [projects.id],
+      name: "ai_usage_project_fk",
+    }).onDelete("set null"),
+  })
+);
+export type AiUsage = typeof aiUsage.$inferSelect;
+export type InsertAiUsage = typeof aiUsage.$inferInsert;
+
+export const messages = mysqlTable(
+  "messages",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    ownerId: int("ownerId").notNull(),
+    projectId: varchar("projectId", { length: 64 }).notNull(),
+    role: varchar("role", { length: 16 }).notNull(),
+    content: mediumtext("content").notNull(),
+    actions: json("actions").$type<string[] | null>(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    ownerIdx: index("messages_owner_idx").on(table.ownerId),
+    projectIdx: index("messages_project_idx").on(table.projectId),
+    createdIdx: index("messages_created_idx").on(table.createdAt),
+    ownerFk: foreignKey({
+      columns: [table.ownerId],
+      foreignColumns: [users.id],
+      name: "messages_owner_fk",
+    }),
+    projectFk: foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [projects.id],
+      name: "messages_project_fk",
+    }).onDelete("cascade"),
+  })
+);
+export type ProjectMessage = typeof messages.$inferSelect;
+export type InsertProjectMessage = typeof messages.$inferInsert;
+
+export const snapshots = mysqlTable(
+  "snapshots",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    ownerId: int("ownerId").notNull(),
+    projectId: varchar("projectId", { length: 64 }).notNull(),
+    label: varchar("label", { length: 320 }).notNull(),
+    files: mediumtext("files").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    ownerIdx: index("snapshots_owner_idx").on(table.ownerId),
+    projectIdx: index("snapshots_project_idx").on(table.projectId),
+    createdIdx: index("snapshots_created_idx").on(table.createdAt),
+    ownerFk: foreignKey({
+      columns: [table.ownerId],
+      foreignColumns: [users.id],
+      name: "snapshots_owner_fk",
+    }),
+    projectFk: foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [projects.id],
+      name: "snapshots_project_fk",
+    }).onDelete("cascade"),
+  })
+);
+export type ProjectSnapshot = typeof snapshots.$inferSelect;
+export type InsertProjectSnapshot = typeof snapshots.$inferInsert;
+
+export const attachments = mysqlTable(
+  "attachments",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    ownerId: int("ownerId").notNull(),
+    projectId: varchar("projectId", { length: 64 }).notNull(),
+    storageKey: varchar("storageKey", { length: 96 }).notNull().unique(),
+    originalName: varchar("originalName", { length: 240 }).notNull(),
+    mimeType: varchar("mimeType", { length: 32 }).notNull(),
+    size: int("size").notNull(),
+    fileData: mediumBlob("fileData"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    ownerIdx: index("attachments_owner_idx").on(table.ownerId),
+    projectIdx: index("attachments_project_idx").on(table.projectId),
+    createdIdx: index("attachments_created_idx").on(table.createdAt),
+    ownerFk: foreignKey({
+      columns: [table.ownerId],
+      foreignColumns: [users.id],
+      name: "attachments_owner_fk",
+    }),
+    projectFk: foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [projects.id],
+      name: "attachments_project_fk",
+    }).onDelete("cascade"),
+  })
+);
+export type ProjectAttachment = typeof attachments.$inferSelect;
+export type InsertProjectAttachment = typeof attachments.$inferInsert;
 
 export const researchSources = mysqlTable(
   "research_sources",

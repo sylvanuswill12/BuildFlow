@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { invokeLLM } from "./_core/llm";
+import { defaultConfiguredAiProvider, invokeConfiguredLLM } from "./aiProviders";
 
 export type ResearchSourceInput = {
   url: string;
@@ -119,7 +119,7 @@ export async function runAdvancedResearch(input: {
         "Frontend Builder",
         "Quality Guardian",
       ];
-  const response = await invokeLLM({
+  const response = await invokeConfiguredLLM(defaultConfiguredAiProvider(), {
     model: "gpt-5-mini",
     messages: [
       {

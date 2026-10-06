@@ -19,7 +19,7 @@ export type DeploymentResult = {
   message: string;
 };
 
-export type DeploymentFiles = Record<string, string>;
+export type DeploymentFiles = Record<string, string | Uint8Array>;
 
 const env = (name: string) => process.env[name]?.trim() || "";
 
@@ -42,12 +42,16 @@ export function deploymentPreflight(target: DeploymentTarget) {
 }
 
 function normalizeFiles(files: DeploymentFiles): Array<{ path: string; bytes: Uint8Array }> {
-  const entries = Object.entries(files)
-    .map(([path, content]) => [path.replace(/^\.\//, "").replace(/^dist\//, ""), content] as const)
-    .filter(([path]) => path && !path.endsWith("/") && !path.split("/").includes(".."));
+  const entries = Object.entries(files).map(([rawPath, content]) => {
+    const path = rawPath.replace(/^\.\//, "").replace(/^dist\//, "");
+    if (!path || path.startsWith("/") || path.endsWith("/") || path.split("/").some(part => !part || part === "." || part === "..")) {
+      throw new Error(`Chemin de déploiement invalide : ${rawPath}`);
+    }
+    return { path, content };
+  });
   if (entries.length === 0) throw new Error("Le bundle de déploiement est vide.");
   if (entries.length > 20_000) throw new Error("Le bundle dépasse la limite de 20 000 fichiers.");
-  const normalized = entries.map(([path, content]) => ({ path, bytes: strToU8(content) }));
+  const normalized = entries.map(({ path, content }) => ({ path, bytes: typeof content === "string" ? strToU8(content) : content }));
   const hasIndex = normalized.some(file => file.path === "index.html");
   if (!hasIndex) {
     throw new Error("Aucun index.html buildé n’est disponible. Construisez d’abord un bundle statique avant de publier.");

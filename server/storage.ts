@@ -1,98 +1,57 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uploads via Forge Server presigned URL to S3 (PUT direct).
-// Downloads return /manus-storage/{key} paths served via 307 redirect.
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { MAX_IMAGE_ATTACHMENT_BYTES } from "../shared/attachments";
 
-import { ENV } from "./_core/env";
+export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
+export const MAX_IMAGE_BYTES = MAX_IMAGE_ATTACHMENT_BYTES;
+export const MAX_IMAGE_BASE64_CHARS = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
+const extensionFor: Record<ImageMimeType, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
 
-function getForgeConfig() {
-  const forgeUrl = ENV.forgeApiUrl;
-  const forgeKey = ENV.forgeApiKey;
-
-  if (!forgeUrl || !forgeKey) {
-    throw new Error(
-      "Storage config missing: set MANUS_API_URL and MANUS_API_KEY",
-    );
-  }
-
-  return { forgeUrl: forgeUrl.replace(/\/+$/, ""), forgeKey };
+function storageRoot() {
+  return resolve(process.env.FILE_STORAGE_DIR?.trim() || join(process.cwd(), "var", "uploads"));
 }
 
-function normalizeKey(relKey: string): string {
-  return relKey.replace(/^\/+/, "");
+export function validateImageBytes(mimeType: string, bytes: Uint8Array): asserts mimeType is ImageMimeType {
+  if (!(IMAGE_MIME_TYPES as readonly string[]).includes(mimeType)) throw new Error("Format image non accepté. Utilisez PNG, JPEG, WebP ou GIF.");
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("Une image doit peser au maximum 4 Mio.");
+  const signatureMatches = mimeType === "image/png"
+    ? bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)
+    : mimeType === "image/jpeg"
+      ? bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+      : mimeType === "image/webp"
+        ? bytes.length >= 12 && String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF" && String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP"
+        : bytes.length >= 6 && ["GIF87a", "GIF89a"].includes(String.fromCharCode(...bytes.subarray(0, 6)));
+  if (!signatureMatches) throw new Error("Le contenu du fichier ne correspond pas au format image déclaré.");
 }
 
-function appendHashSuffix(relKey: string): string {
-  const hash = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
-  const lastDot = relKey.lastIndexOf(".");
-  if (lastDot === -1) return `${relKey}_${hash}`;
-  return `${relKey.slice(0, lastDot)}_${hash}${relKey.slice(lastDot)}`;
+function safeStorageKey(key: string) {
+  if (!/^[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(key)) throw new Error("Clé de stockage invalide.");
+  return join(storageRoot(), key);
 }
 
-export async function storagePut(
-  relKey: string,
-  data: Buffer | Uint8Array | string,
-  contentType = "application/octet-stream",
-): Promise<{ key: string; url: string }> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = appendHashSuffix(normalizeKey(relKey));
-
-  // 1. Get presigned PUT URL from Forge
-  const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
-  presignUrl.searchParams.set("path", key);
-
-  const presignResp = await fetch(presignUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
-  });
-
-  if (!presignResp.ok) {
-    const msg = await presignResp.text().catch(() => presignResp.statusText);
-    throw new Error(`Storage presign failed (${presignResp.status}): ${msg}`);
-  }
-
-  const { url: s3Url } = (await presignResp.json()) as { url: string };
-  if (!s3Url) throw new Error("Forge returned empty presign URL");
-
-  // 2. PUT file directly to S3
-  const blob =
-    typeof data === "string"
-      ? new Blob([data], { type: contentType })
-      : new Blob([data as any], { type: contentType });
-
-  const uploadResp = await fetch(s3Url, {
-    method: "PUT",
-    headers: { "Content-Type": contentType },
-    body: blob,
-  });
-
-  if (!uploadResp.ok) {
-    throw new Error(`Storage upload to S3 failed (${uploadResp.status})`);
-  }
-
-  return { key, url: `/manus-storage/${key}` };
+export function createImageStorageKey(mimeType: ImageMimeType, bytes: Uint8Array) {
+  validateImageBytes(mimeType, bytes);
+  return `${randomUUID()}.${extensionFor[mimeType]}`;
 }
 
-export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
-  const key = normalizeKey(relKey);
-  return { key, url: `/manus-storage/${key}` };
+export async function storeImageAttachment(mimeType: ImageMimeType, bytes: Uint8Array) {
+  const storageKey = createImageStorageKey(mimeType, bytes);
+  await mkdir(storageRoot(), { recursive: true, mode: 0o700 });
+  await writeFile(safeStorageKey(storageKey), bytes, { flag: "wx", mode: 0o600 });
+  return storageKey;
 }
 
-export async function storageGetSignedUrl(relKey: string): Promise<string> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = normalizeKey(relKey);
+export async function readImageAttachment(storageKey: string): Promise<Buffer> {
+  return readFile(safeStorageKey(storageKey));
+}
 
-  const getUrl = new URL("v1/storage/presign/get", forgeUrl + "/");
-  getUrl.searchParams.set("path", key);
-
-  const resp = await fetch(getUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
-  });
-
-  if (!resp.ok) {
-    const msg = await resp.text().catch(() => resp.statusText);
-    throw new Error(`Storage signed URL failed (${resp.status}): ${msg}`);
-  }
-
-  const { url } = (await resp.json()) as { url: string };
-  if (!url) throw new Error("Storage did not return a download URL");
-  return url;
+export async function removeImageAttachment(storageKey: string) {
+  await rm(safeStorageKey(storageKey), { force: true });
 }

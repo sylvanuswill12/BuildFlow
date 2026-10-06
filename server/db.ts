@@ -1,23 +1,33 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
+  InsertAiUsage,
   InsertAgentMemory,
   InsertProject,
+  InsertProjectMessage,
+  InsertProjectSnapshot,
+  InsertProjectAttachment,
   InsertResearchRun,
   InsertResearchSource,
-  InsertUser,
   Payment,
   Project,
+  ProjectMessage,
+  ProjectSnapshot,
+  ProjectAttachment,
   User,
   agentMemories,
+  aiUsage,
   payments,
   projects,
+  messages,
+  snapshots,
+  attachments,
   researchRuns,
   researchSources,
   stripeEvents,
   users,
 } from "../drizzle/schema";
-import { ENV } from "./_core/env";
 import { isBuildFlowAdminEmail } from "./admin";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -50,90 +60,55 @@ export async function checkDatabase(): Promise<boolean> {
   }
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
+export type CreateLocalUserInput = {
+  name: string;
+  email: string;
+  passwordHash: string;
+};
 
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database is not available");
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    const isBuildFlowAdmin = isBuildFlowAdminEmail(user.email);
-    if (isBuildFlowAdmin) {
-      values.role = "admin";
-      values.plan = "team";
-      values.credits = 2_000;
-      values.generationCount = 0;
-      values.creditsResetAt = new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
-      updateSet.role = "admin";
-      updateSet.plan = "team";
-      updateSet.credits = 2_000;
-      updateSet.generationCount = 0;
-      updateSet.creditsResetAt = values.creditsResetAt;
-    } else if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = "admin";
-      updateSet.role = "admin";
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
-export async function getUserByOpenId(openId: string) {
+export async function getUserByEmail(email: string): Promise<User | undefined> {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
+  if (!db) throw new Error("Database is not available");
   const result = await db
     .select()
     .from(users)
-    .where(eq(users.openId, openId))
+    .where(eq(users.email, normalizeEmail(email)))
     .limit(1);
+  return result[0];
+}
 
-  return result.length > 0 ? result[0] : undefined;
+export async function createLocalUser(input: CreateLocalUserInput): Promise<User> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const email = normalizeEmail(input.email);
+  const isAdmin = isBuildFlowAdminEmail(email);
+  const now = new Date();
+  await db.insert(users).values({
+    authId: randomUUID(),
+    name: input.name.trim(),
+    email,
+    passwordHash: input.passwordHash,
+    role: isAdmin ? "admin" : "user",
+    plan: isAdmin ? "team" : "free",
+    credits: isAdmin ? 2_000 : 20,
+    generationCount: 0,
+    creditsResetAt: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+    lastSignedIn: now,
+  });
+  const user = await getUserByEmail(email);
+  if (!user) throw new Error("User was not created");
+  return user;
+}
+
+export async function touchUserLastSignedIn(id: number): Promise<User | undefined> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, id));
+  return getUserById(id);
 }
 
 export async function listProjects(ownerId: number): Promise<Project[]> {
@@ -249,6 +224,144 @@ export async function deleteProject(
   return Number((result as { affectedRows?: number }).affectedRows ?? 0) > 0;
 }
 
+export async function listProjectMessages(
+  ownerId: number,
+  projectId: string
+): Promise<ProjectMessage[]> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const rows = await db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.ownerId, ownerId),
+        eq(messages.projectId, projectId)
+      )
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(500);
+  return rows.reverse();
+}
+
+export async function createProjectMessage(
+  input: Omit<InsertProjectMessage, "id" | "createdAt">
+): Promise<ProjectMessage> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const message = { ...input, id: randomUUID() };
+  await db.insert(messages).values(message);
+  const [created] = await db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.ownerId, input.ownerId),
+        eq(messages.id, message.id)
+      )
+    )
+    .limit(1);
+  if (!created) throw new Error("Project message was not created");
+  return created;
+}
+
+export async function createAiUsage(input: InsertAiUsage): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.insert(aiUsage).values(input);
+}
+
+export async function listAiUsage(ownerId: number, limit = 100) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.select({
+    id: aiUsage.id,
+    projectId: aiUsage.projectId,
+    provider: aiUsage.provider,
+    model: aiUsage.model,
+    complexity: aiUsage.complexity,
+    inputTokens: aiUsage.inputTokens,
+    outputTokens: aiUsage.outputTokens,
+    totalTokens: aiUsage.totalTokens,
+    estimatedCostMicros: aiUsage.estimatedCostMicros,
+    tokenCountsEstimated: aiUsage.tokenCountsEstimated,
+    latencyMs: aiUsage.latencyMs,
+    fallbackFrom: aiUsage.fallbackFrom,
+    createdAt: aiUsage.createdAt,
+  }).from(aiUsage).where(eq(aiUsage.ownerId, ownerId)).orderBy(desc(aiUsage.createdAt)).limit(limit);
+}
+
+export async function listProjectSnapshots(ownerId: number, projectId: string): Promise<Array<Omit<ProjectSnapshot, "files">>> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.select({
+    id: snapshots.id,
+    ownerId: snapshots.ownerId,
+    projectId: snapshots.projectId,
+    label: snapshots.label,
+    createdAt: snapshots.createdAt,
+  }).from(snapshots)
+    .where(and(eq(snapshots.ownerId, ownerId), eq(snapshots.projectId, projectId)))
+    .orderBy(desc(snapshots.createdAt))
+    .limit(100);
+}
+
+export async function getProjectSnapshot(ownerId: number, id: string): Promise<ProjectSnapshot | undefined> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const [snapshot] = await db.select().from(snapshots)
+    .where(and(eq(snapshots.ownerId, ownerId), eq(snapshots.id, id)))
+    .limit(1);
+  return snapshot;
+}
+
+export async function createProjectSnapshot(input: Omit<InsertProjectSnapshot, "id" | "createdAt">): Promise<ProjectSnapshot> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const id = randomUUID();
+  await db.insert(snapshots).values({ ...input, id });
+  const created = await getProjectSnapshot(input.ownerId, id);
+  if (!created) throw new Error("Project snapshot was not created");
+  return created;
+}
+
+export async function createProjectAttachment(input: InsertProjectAttachment): Promise<Omit<ProjectAttachment, "fileData">> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.insert(attachments).values(input);
+  const [created] = await db.select({
+    id: attachments.id,
+    ownerId: attachments.ownerId,
+    projectId: attachments.projectId,
+    storageKey: attachments.storageKey,
+    originalName: attachments.originalName,
+    mimeType: attachments.mimeType,
+    size: attachments.size,
+    createdAt: attachments.createdAt,
+  }).from(attachments)
+    .where(and(eq(attachments.ownerId, input.ownerId), eq(attachments.id, input.id)))
+    .limit(1);
+  if (!created) throw new Error("Image attachment was not created");
+  return created;
+}
+
+export async function getProjectAttachment(ownerId: number, id: string): Promise<ProjectAttachment | undefined> {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const [attachment] = await db.select().from(attachments)
+    .where(and(eq(attachments.ownerId, ownerId), eq(attachments.id, id)))
+    .limit(1);
+  return attachment;
+}
+
+export async function listProjectAttachments(ownerId: number, projectId: string, ids: string[]): Promise<ProjectAttachment[]> {
+  if (!ids.length) return [];
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.select().from(attachments)
+    .where(and(eq(attachments.ownerId, ownerId), eq(attachments.projectId, projectId), inArray(attachments.id, ids)));
+}
+
 export async function consumeCredit(
   userId: number
 ): Promise<{ credits: number; generationCount: number } | null> {
@@ -289,13 +402,13 @@ export async function getUserById(id: number): Promise<User | undefined> {
 
 export async function updateUserProfile(
   userId: number,
-  patch: Pick<InsertUser, "name" | "email">
+  patch: Pick<CreateLocalUserInput, "name" | "email">
 ): Promise<User | undefined> {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   await db
     .update(users)
-    .set({ ...patch, updatedAt: new Date() })
+    .set({ ...patch, email: normalizeEmail(patch.email), updatedAt: new Date() })
     .where(eq(users.id, userId));
   return getUserById(userId);
 }

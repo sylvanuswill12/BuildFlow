@@ -1,5 +1,5 @@
 [build]
-  command = "pnpm build"
+  command = "pnpm build && pnpm db:migrate:production"
   publish = "dist/public"
   functions = "netlify/functions"
 

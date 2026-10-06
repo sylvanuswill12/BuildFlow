@@ -7,10 +7,12 @@ describe("parseGeneratedChange", () => {
       code: "export default function App() { return <main />; }",
       changes: ["Ajout de la page principale"],
       assistantMessage: "La page principale a été mise à jour.",
+      files: [{ path: "page.tsx", content: "export default function App() { return <main />; }" }],
     }))).toEqual({
       code: "export default function App() { return <main />; }",
       changes: ["Ajout de la page principale"],
       assistantMessage: "La page principale a été mise à jour.",
+      files: [{ path: "page.tsx", content: "export default function App() { return <main />; }" }],
     });
   });
 

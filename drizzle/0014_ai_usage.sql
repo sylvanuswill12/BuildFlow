@@ -1,0 +1,22 @@
+CREATE TABLE `ai_usage` (
+  `id` varchar(64) NOT NULL,
+  `ownerId` int NOT NULL,
+  `projectId` varchar(64),
+  `provider` varchar(48) NOT NULL,
+  `model` varchar(160) NOT NULL,
+  `complexity` enum('low','medium','high') NOT NULL,
+  `inputTokens` int NOT NULL,
+  `outputTokens` int NOT NULL,
+  `totalTokens` int NOT NULL,
+  `estimatedCostMicros` int NOT NULL,
+  `tokenCountsEstimated` int NOT NULL DEFAULT 1,
+  `latencyMs` int NOT NULL,
+  `fallbackFrom` varchar(48),
+  `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `ai_usage_owner_idx` (`ownerId`),
+  KEY `ai_usage_project_idx` (`projectId`),
+  KEY `ai_usage_created_idx` (`createdAt`),
+  CONSTRAINT `ai_usage_owner_fk` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`),
+  CONSTRAINT `ai_usage_project_fk` FOREIGN KEY (`projectId`) REFERENCES `projects` (`id`) ON DELETE SET NULL
+);

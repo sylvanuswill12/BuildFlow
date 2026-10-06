@@ -1,189 +1,51 @@
 import {
   WebContainer,
-  type FileSystemTree,
   type WebContainerProcess,
 } from "@webcontainer/api";
+import {
+  prepareRuntimeFiles,
+  runtimeTreeFromFiles,
+} from "@/lib/runtimeProject";
+import { isFeatureEnabled } from "@/lib/featureSettings";
+import { dependencySnapshotKey, getDependencySnapshot, putDependencySnapshot } from "@/lib/runtimeSnapshotCache";
 
 type ProjectFiles = Record<string, string>;
-type MutableEntry = { file: { contents: string } } | { directory: MutableTree };
-type MutableTree = Record<string, MutableEntry>;
-
 let containerPromise: Promise<WebContainer> | null = null;
-let installPromise: Promise<void> | null = null;
-let mountChain: Promise<unknown> = Promise.resolve();
+let installPromise: { signature: string; promise: Promise<void> } | null = null;
+let installChain: Promise<void> = Promise.resolve();
+let syncChain: Promise<unknown> = Promise.resolve();
 let previewUrl: string | null = null;
 let devProcess: WebContainerProcess | null = null;
 let latestSource = "";
 let latestFiles: ProjectFiles = {};
+let mountedFiles: ProjectFiles | null = null;
 let sourceVersion = 0;
 let mountedVersion = 0;
+let installedPackageSignature: string | null = null;
 export type RuntimeLogger = (message: string) => void;
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  milliseconds: number,
-  message: string
-) {
+function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string) {
   return new Promise<T>((resolve, reject) => {
-    const timeout = window.setTimeout(
-      () => reject(new Error(message)),
-      milliseconds
-    );
-    promise
-      .then(value => {
-        window.clearTimeout(timeout);
-        resolve(value);
-      })
-      .catch(error => {
-        window.clearTimeout(timeout);
-        reject(error);
-      });
+    const timeout = window.setTimeout(() => reject(new Error(message)), milliseconds);
+    promise.then(value => {
+      window.clearTimeout(timeout);
+      resolve(value);
+    }).catch(error => {
+      window.clearTimeout(timeout);
+      reject(error);
+    });
   });
 }
 
-function normalizeSource(source: string) {
-  if (!/\bexport\s+default\b/.test(source)) {
-    throw new Error(
-      "Le runtime beta attend un composant avec un export default dans le fichier actif."
-    );
-  }
-  return source
-    .replaceAll('from "@/components/', 'from "./components/')
-    .replaceAll("from '@/components/", "from './components/")
-    .replaceAll('from "@/', 'from "./')
-    .replaceAll("from '@/", "from './");
-}
-
-function packageForProject(projectFiles: ProjectFiles) {
-  let projectPackage: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(projectFiles["package.json"] ?? "{}");
-    if (parsed && typeof parsed === "object") projectPackage = parsed;
-  } catch {
-    // Keep the safe runtime manifest when a generated package.json is incomplete.
-  }
-  const dependencies =
-    projectPackage.dependencies &&
-    typeof projectPackage.dependencies === "object"
-      ? projectPackage.dependencies
-      : {};
-  const devDependencies =
-    projectPackage.devDependencies &&
-    typeof projectPackage.devDependencies === "object"
-      ? projectPackage.devDependencies
-      : {};
-  return {
-    ...projectPackage,
-    name:
-      typeof projectPackage.name === "string"
-        ? projectPackage.name
-        : "buildflow-runtime",
-    private: true,
-    scripts: {
-      ...(typeof projectPackage.scripts === "object" && projectPackage.scripts
-        ? projectPackage.scripts
-        : {}),
-      dev: "vite --host 0.0.0.0",
-    },
-    dependencies: { ...dependencies, react: "^19.2.1", "react-dom": "^19.2.1" },
-    devDependencies: {
-      ...devDependencies,
-      vite: "^7.1.9",
-      "@vitejs/plugin-react": "^5.0.4",
-      typescript: "^5.9.3",
-    },
-  };
-}
-
-function filePathForWorkspaceKey(key: string) {
-  if (key.startsWith("src/") || key.startsWith("public/")) return key;
-  if (key === "layout.tsx") return "src/app/layout.tsx";
-  if (key === "utils.ts") return "src/lib/utils.ts";
-  if (key === "globals.css") return "src/styles/globals.css";
-  if (
-    [
-      "Sidebar.tsx",
-      "DashboardCard.tsx",
-      "ExpenseChart.tsx",
-      "ExpenseForm.tsx",
-      "TransactionList.tsx",
-    ].includes(key)
-  )
-    return `src/components/${key}`;
-  if (key === "README.md") return "README.md";
-  if (key === "tailwind.config.ts") return "tailwind.config.ts";
-  if (key === "package.json") return "package.json";
-  return `src/generated/${key.replace(/^\/+/, "")}`;
-}
-
-function treeFromFiles(files: Record<string, string>): FileSystemTree {
-  const root: MutableTree = {};
-  for (const [path, contents] of Object.entries(files)) {
-    const segments = path.split("/").filter(Boolean);
-    let cursor = root;
-    segments.forEach((segment, index) => {
-      if (index === segments.length - 1) {
-        cursor[segment] = { file: { contents } };
-        return;
-      }
-      const current = cursor[segment];
-      if (!current || !("directory" in current))
-        cursor[segment] = { directory: {} };
-      cursor = (cursor[segment] as { directory: MutableTree }).directory;
-    });
-  }
-  return root as FileSystemTree;
-}
-
-function filesForProject(
-  source: string,
-  projectFiles: ProjectFiles
-): FileSystemTree {
-  const dashboardCard =
-    projectFiles["DashboardCard.tsx"] ??
-    `export function DashboardCard({ label, value }: { label: string; value: string }) { return <article style={{ border: "1px solid #e2e8f0", borderRadius: 14, padding: 18, background: "white" }}><span style={{ color: "#64748b", fontSize: 12 }}>{label}</span><strong style={{ display: "block", marginTop: 8, fontSize: 24 }}>{value}</strong></article>; }`;
-  const expenseChart =
-    projectFiles["ExpenseChart.tsx"] ??
-    `export function ExpenseChart() { return <section style={{ marginTop: 24, border: "1px solid #e2e8f0", borderRadius: 14, padding: 20, background: "white" }}><h2 style={{ fontSize: 16 }}>Dépenses mensuelles</h2><div style={{ display: "flex", alignItems: "end", gap: 8, height: 160, marginTop: 20 }}>{[42,58,48,75,62,84,73,91,68,78].map((height, index) => <i key={index} style={{ display: "block", flex: 1, height: height + "%", background: "#3b82f6", borderRadius: "6px 6px 2px 2px" }} />)}</div></section>; }`;
-  const files: Record<string, string> = {
-    "package.json": JSON.stringify(packageForProject(projectFiles), null, 2),
-    "index.html": `<!doctype html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BuildFlow Runtime</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`,
-    "src/main.tsx": `import React from "react";\nimport { createRoot } from "react-dom/client";\nimport App from "./App";\nimport "./styles/globals.css";\ncreateRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);`,
-    "src/App.tsx": normalizeSource(source),
-    "src/components/DashboardCard.tsx": dashboardCard,
-    "src/components/ExpenseChart.tsx": expenseChart,
-    "src/styles/globals.css":
-      projectFiles["globals.css"] ??
-      "body{margin:0;background:#f8fafc;color:#0f172a;font-family:system-ui,sans-serif}*{box-sizing:border-box}",
-  };
-  for (const [key, contents] of Object.entries(projectFiles)) {
-    if (
-      key === "page.tsx" ||
-      key === "package.json" ||
-      key === "DashboardCard.tsx" ||
-      key === "ExpenseChart.tsx" ||
-      key === "globals.css"
-    )
-      continue;
-    files[filePathForWorkspaceKey(key)] = contents;
-  }
-  return treeFromFiles(files);
-}
-
-function resetFailedBoot() {
-  containerPromise = null;
-  installPromise = null;
-  previewUrl = null;
-  devProcess = null;
-  mountedVersion = 0;
-}
-
 async function getContainer() {
+  if (!window.crossOriginIsolated) {
+    throw new Error("Le runtime réel nécessite l’isolation cross-origin. Redéployez l’application puis rechargez la page en autorisant les workers et les cookies de site.");
+  }
   if (!containerPromise) {
     containerPromise = withTimeout(
       WebContainer.boot({ coep: "credentialless" }),
-      15_000,
-      "WebContainer n’a pas pu s’initialiser dans ce navigateur (timeout de 15 s)."
+      45_000,
+      "WebContainer n’a pas pu s’initialiser dans ce navigateur (timeout de 45 s). Vérifiez que le navigateur autorise les workers et les cookies de site."
     ).catch(error => {
       containerPromise = null;
       throw error;
@@ -192,55 +54,118 @@ async function getContainer() {
   return containerPromise;
 }
 
-function enqueueMount(source: string, projectFiles: ProjectFiles) {
+export async function prewarmWebContainerRuntime(log?: RuntimeLogger) {
+  if (!isFeatureEnabled("prewarmRuntime")) return false;
+  const startedAt = performance.now();
+  try {
+    await getContainer();
+    log?.(`WebContainer préchauffé en ${Math.round(performance.now() - startedAt)} ms.`);
+    return true;
+  } catch (error) {
+    log?.(`Préchauffage indisponible : ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+async function writeChangedFiles(container: WebContainer, files: ProjectFiles) {
+  if (!mountedFiles) {
+    await container.mount(runtimeTreeFromFiles(files));
+    mountedFiles = { ...files };
+    return;
+  }
+  const previous = mountedFiles;
+  const removed = Object.keys(previous).filter(path => !(path in files));
+  const changed = Object.entries(files).filter(([path, contents]) => previous[path] !== contents);
+  for (const path of removed) {
+    try {
+      await container.fs.rm(path);
+    } catch {
+      // The file may already have been removed by a generated shell action.
+    }
+  }
+  for (const [path, contents] of changed) {
+    await container.fs.writeFile(path, contents);
+  }
+  mountedFiles = { ...files };
+}
+
+function enqueueSync(source: string, projectFiles: ProjectFiles) {
   latestSource = source;
   latestFiles = projectFiles;
   const version = ++sourceVersion;
-  const task = mountChain
-    .catch(() => undefined)
-    .then(async () => {
-      const container = await getContainer();
-      await container.mount(filesForProject(source, projectFiles));
-      mountedVersion = version;
-      return container;
-    });
-  mountChain = task;
+  const files = prepareRuntimeFiles(source, projectFiles);
+  const task = syncChain.catch(() => undefined).then(async () => {
+    const container = await getContainer();
+    await writeChangedFiles(container, files);
+    mountedVersion = version;
+    return container;
+  });
+  syncChain = task;
   return task;
 }
 
-async function ensureLatestSourceMounted() {
-  while (mountedVersion !== sourceVersion) {
-    await enqueueMount(latestSource, latestFiles);
-  }
+async function ensureLatestFilesSynced() {
+  while (mountedVersion !== sourceVersion) await enqueueSync(latestSource, latestFiles);
 }
 
-async function ensureDependencies(
-  container: WebContainer,
-  log?: RuntimeLogger
-) {
-  if (!installPromise) {
-    log?.("Installation des dépendances…");
-    installPromise = container
-      .spawn("npm", ["install"])
-      .then(async process => {
-        process.output
-          .pipeTo(
-            new WritableStream({ write: message => log?.(String(message)) })
-          )
-          .catch(() => undefined);
-        const exitCode = await process.exit;
-        if (exitCode !== 0)
-          throw new Error(
-            `Installation du runtime échouée (code ${exitCode}).`
-          );
-        log?.("Dépendances installées.");
-      })
-      .catch(error => {
-        installPromise = null;
-        throw error;
-      });
+async function packageSignature(files: ProjectFiles) {
+  return dependencySnapshotKey(files);
+}
+
+async function runInstall(container: WebContainer, log?: RuntimeLogger) {
+  log?.("Installation/mise à jour des dépendances npm…");
+  const process = await container.spawn("npm", ["install", "--no-audit", "--no-fund"]);
+  const outputTask = process.output.pipeTo(new WritableStream({ write: message => log?.(String(message)) })).catch(() => undefined);
+  const exitCode = await process.exit;
+  await outputTask;
+  if (exitCode !== 0) throw new Error(`Installation du runtime échouée (code ${exitCode}).`);
+  log?.("Dépendances installées.");
+}
+
+async function ensureDependencies(container: WebContainer, log?: RuntimeLogger) {
+  while (true) {
+    const packageText = mountedFiles?.["package.json"] ?? "";
+    const signature = await packageSignature(mountedFiles ?? {});
+    if (signature === installedPackageSignature) return;
+    if (installPromise?.signature === signature) {
+      await installPromise.promise;
+      continue;
+    }
+    const promise = installChain.catch(() => undefined).then(async () => {
+      if (isFeatureEnabled("dependencySnapshotCache")) {
+        const cached = await getDependencySnapshot(signature);
+        if (cached) {
+          try {
+            await container.mount(cached, { mountPoint: "node_modules" });
+            installedPackageSignature = signature;
+            log?.("Dépendances restaurées depuis le cache local du navigateur.");
+            return;
+          } catch (error) {
+            log?.(`Cache de dépendances ignoré : ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+      await runInstall(container, log);
+      if (isFeatureEnabled("dependencySnapshotCache")) {
+        try {
+          const snapshot = await container.export("node_modules", { format: "binary" });
+          if (await putDependencySnapshot(signature, snapshot)) log?.("Snapshot des dépendances enregistré dans IndexedDB.");
+        } catch (error) {
+          log?.(`Cache non enregistré : ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    });
+    installChain = promise;
+    installPromise = { signature, promise };
+    try {
+      await promise;
+      installedPackageSignature = signature;
+    } catch (error) {
+      if (installPromise?.promise === promise) installPromise = null;
+      throw error;
+    }
+    if (packageText === (mountedFiles?.["package.json"] ?? "") && signature === await packageSignature(mountedFiles ?? {})) return;
   }
-  await installPromise;
 }
 
 async function startDevServer(container: WebContainer, log?: RuntimeLogger) {
@@ -260,74 +185,149 @@ async function startDevServer(container: WebContainer, log?: RuntimeLogger) {
       resolve(url);
     });
     log?.("Démarrage du serveur Vite…");
-    container
-      .spawn("npm", ["run", "dev"])
-      .then(process => {
-        if (settled) {
-          process.kill();
-          return;
+    container.spawn("npm", ["run", "dev"]).then(process => {
+      if (settled) {
+        process.kill();
+        return;
+      }
+      devProcess = process;
+      process.output.pipeTo(new WritableStream({ write: message => log?.(String(message)) })).catch(() => undefined);
+      void process.exit.then(exitCode => {
+        if (!settled && exitCode !== 0) {
+          settled = true;
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(new Error(`Le serveur Vite s’est arrêté (code ${exitCode}).`));
         }
-        devProcess = process;
-        process.output
-          .pipeTo(
-            new WritableStream({ write: message => log?.(String(message)) })
-          )
-          .catch(() => undefined);
-        void process.exit.then(exitCode => {
-          if (!settled && exitCode !== 0) {
-            settled = true;
-            window.clearTimeout(timeout);
-            unsubscribe();
-            reject(
-              new Error(`Le serveur Vite s’est arrêté (code ${exitCode}).`)
-            );
-          }
-        });
-      })
-      .catch(error => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        unsubscribe();
-        reject(error);
       });
+    }).catch(error => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      unsubscribe();
+      reject(error);
+    });
   });
   try {
     previewUrl = await ready;
     log?.(`Serveur prêt : ${previewUrl}`);
     return previewUrl;
   } catch (error) {
-    if (devProcess) {
-      devProcess.kill();
-      devProcess = null;
-    }
+    devProcess?.kill();
+    devProcess = null;
     previewUrl = null;
     throw error;
   }
 }
 
-export async function startWebContainerRuntime(
-  source: string,
-  projectFiles: ProjectFiles,
-  log?: RuntimeLogger
-): Promise<string> {
+export async function startWebContainerRuntime(source: string, projectFiles: ProjectFiles, log?: RuntimeLogger) {
+  const startedAt = performance.now();
   try {
-    const container = await enqueueMount(source, projectFiles);
+    const container = await enqueueSync(source, projectFiles);
     log?.("Initialisation du sandbox navigateur…");
     await ensureDependencies(container, log);
-    await ensureLatestSourceMounted();
-    return await startDevServer(container, log);
+    await ensureLatestFilesSynced();
+    const url = await startDevServer(container, log);
+    log?.(`Runtime prêt en ${Math.round(performance.now() - startedAt)} ms.`);
+    return url;
   } catch (error) {
-    resetFailedBoot();
+    containerPromise = null;
+    previewUrl = null;
+    devProcess = null;
+    mountedFiles = null;
+    mountedVersion = 0;
+    installedPackageSignature = null;
+    installPromise = null;
     throw error;
   }
 }
 
-export async function updateWebContainerRuntime(
-  source: string,
-  projectFiles: ProjectFiles
-) {
+export async function updateWebContainerRuntime(source: string, projectFiles: ProjectFiles, log?: RuntimeLogger) {
   if (!containerPromise) return;
-  await enqueueMount(source, projectFiles);
-  await ensureLatestSourceMounted();
+  await enqueueSync(source, projectFiles);
+  await ensureLatestFilesSynced();
+  const container = await getContainer();
+  await ensureDependencies(container, log);
+}
+
+export async function runWebContainerCommand(
+  command: string,
+  log?: RuntimeLogger,
+  timeoutMs = 120_000
+): Promise<{ exitCode: number; output: string }> {
+  if (!command.trim()) throw new Error("Commande shell vide.");
+  const container = await getContainer();
+  await ensureLatestFilesSynced();
+  await ensureDependencies(container, log);
+  log?.(`$ ${command}`);
+  const process = await container.spawn("jsh", ["-c", command]);
+  const chunks: string[] = [];
+  const outputTask = process.output.pipeTo(new WritableStream({
+    write(message) {
+      const text = String(message);
+      chunks.push(text);
+      if (chunks.join("").length > 40_000) chunks.shift();
+      log?.(text);
+    },
+  })).catch(() => undefined);
+  let timeoutHandle = 0;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = window.setTimeout(() => {
+      process.kill();
+      reject(new Error(`Commande interrompue après ${Math.round(timeoutMs / 1000)} secondes.`));
+    }, timeoutMs);
+  });
+  try {
+    const exitCode = await Promise.race([process.exit, timeout]);
+    await outputTask;
+    return { exitCode, output: chunks.join("").slice(-40_000) };
+  } finally {
+    window.clearTimeout(timeoutHandle);
+    process.kill();
+  }
+}
+
+function encodeBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+export async function exportWebContainerBuildFiles(directory = "dist"): Promise<Record<string, string>> {
+  const container = await getContainer();
+  const files: Record<string, string> = {};
+  let totalBytes = 0;
+  const visit = async (current: string): Promise<void> => {
+    const entries = await container.fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = `${current}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile()) {
+        const bytes = await container.fs.readFile(path);
+        totalBytes += bytes.byteLength;
+        if (Object.keys(files).length >= 20_000 || totalBytes > 100 * 1024 * 1024) {
+          throw new Error("Le build dépasse les limites de publication (20 000 fichiers / 100 Mo).");
+        }
+        files[path.slice(directory.length + 1)] = encodeBase64(bytes);
+      }
+    }
+  };
+  await visit(directory);
+  if (!Object.hasOwn(files, "index.html")) throw new Error("Le build ne contient pas dist/index.html. Vérifiez le script build du projet.");
+  return files;
+}
+
+export function stopWebContainerRuntime() {
+  devProcess?.kill();
+  devProcess = null;
+  previewUrl = null;
+  containerPromise = null;
+  mountedFiles = null;
+  mountedVersion = 0;
+  installedPackageSignature = null;
+  installPromise = null;
 }

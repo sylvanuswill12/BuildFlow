@@ -1,5 +1,6 @@
-export const BUILD_FLOW_ADMIN_EMAIL = "atchouyaosylvain59@gmail.com";
+import { ENV } from "./_core/env";
 
 export function isBuildFlowAdminEmail(email: string | null | undefined): boolean {
-  return email?.trim().toLowerCase() === BUILD_FLOW_ADMIN_EMAIL;
+  if (!email) return false;
+  return ENV.adminEmails.includes(email.trim().toLowerCase());
 }

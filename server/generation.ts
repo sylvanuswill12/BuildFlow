@@ -19,8 +19,8 @@ export const generatedChangeSchema = z.object({
         })
         .strict()
     )
-    .max(12, "Trop de fichiers générés")
-    .optional(),
+    .min(1, "Au moins un fichier doit être généré")
+    .max(12, "Trop de fichiers générés"),
 }).strict();
 
 export type GeneratedChange = z.infer<typeof generatedChangeSchema>;

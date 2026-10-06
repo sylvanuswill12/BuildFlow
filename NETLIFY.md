@@ -1,51 +1,58 @@
 # Déploiement BuildFlow sur Netlify
 
-Cette version est préparée pour une architecture Vite + Netlify Functions + Express. Le frontend est publié dans `dist/public`; les routes backend sont servies par `netlify/functions/api.ts` et `/api/*` est redirigé vers cette Function.
+Cette version est autonome : le frontend Vite est publié dans `dist/public` et les routes Express/tRPC sont servies par `netlify/functions/api.ts`.
 
-## Configuration Netlify obligatoire
+## Variables Netlify
 
-Dans **Project configuration → Environment variables**, ajoutez les valeurs réelles dans le scope **Production**. Ne mettez jamais ces valeurs dans GitHub, le ZIP ou un fichier `.env` commité.
+Ajoutez les valeurs suivantes dans **Project configuration → Environment variables** ; ne les mettez jamais dans Git ou dans l’archive :
 
 | Groupe | Variables | Utilité |
 |---|---|---|
-| Session et login | `MANUS_PROJECT_ID`, `MANUS_JWT_SECRET`, `MANUS_OAUTH_API_URL`, `MANUS_OAUTH_PORTAL_URL` | Connexion, cookies et sessions signées |
-| Base | `DATABASE_URL` | Utilisateurs, projets, crédits et déploiements persistants |
-| IA | Au moins un provider complet, par exemple `OPENAI_API_KEY`, ou `MANUS_API_URL` + `MANUS_API_KEY`, ou `GOOGLE_GENERATIVE_AI_API_KEY` | Génération initiale et modifications IA |
-| Facturation facultative | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Paiements et webhooks Stripe |
-| Publication depuis BuildFlow facultative | `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID` | Bouton de publication vers Netlify |
+| Session locale | `APP_SESSION_SECRET`, `ADMIN_EMAILS` (facultatif) | Cookies et rôles locaux. |
+| Base | `DATABASE_URL` | Comptes, projets, crédits et déploiements persistants. |
+| IA | Une clé de provider, par exemple `OPENAI_API_KEY`; ou `OMNIROUTE_API_BASE_URL` et `OMNIROUTE_API_KEY` pour OmniRoute | Génération et modifications IA. L’URL OmniRoute doit être accessible en HTTPS depuis les Functions et se terminer par `/v1`; les deux variables restent côté serveur. |
+| Facturation facultative | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Paiements et webhooks Stripe. |
+| Publication facultative | `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID` | Publication vers Netlify depuis BuildFlow. |
 
-Le modèle complet est dans `.env.example`. Les variables `VITE_*` sont publiques et doivent être définies avant le build si la fonction frontend concernée est utilisée.
+`APP_SESSION_SECRET` doit faire au moins 32 caractères ; générez-le par exemple avec `openssl rand -base64 48`.
 
-## Build Netlify
+## Build et vérification
 
-Le fichier `netlify.toml` définit automatiquement :
+`netlify.toml` configure automatiquement :
 
 ```text
-Build command: pnpm build
+Build command: pnpm build && pnpm db:migrate:production
 Publish directory: dist/public
 Functions directory: netlify/functions
 ```
 
-Aucun plugin Next.js ne doit être installé : BuildFlow utilise Vite, pas Next.js.
+`db:migrate:production` n’exécute le migrateur Drizzle que lorsque le contexte Netlify intégré
+`CONTEXT` vaut `production`; les Deploy Previews et Branch Deploys ne touchent pas à Aiven.
+Avant toute migration, un préflight vérifie la table `users` et bloque les groupes de courriels
+en double sans afficher d’adresse ni commencer de changement de schéma. La migration locale
+`0010` conserve l’identifiant historique `openId` pour une compatibilité de rollback; le
+runtime BuildFlow n’utilise que l’authentification locale. Les anciens comptes sans
+`passwordHash` restent conservés mais ne peuvent pas ouvrir une session par mot de passe; une
+procédure de réinitialisation vérifiée, non fournie par ce build, est nécessaire.
 
-## Vérification après chaque publication
-
-1. Ouvrez `https://VOTRE_SITE.netlify.app/` et vérifiez que l’interface se charge.
-2. Ouvrez `https://VOTRE_SITE.netlify.app/api/health`. Cette route doit répondre en HTTP 200 et retourner `status: "ok"`.
-3. Ouvrez `https://VOTRE_SITE.netlify.app/api/health?deep=1`. Le champ `checks.database` doit être `true` lorsque `DATABASE_URL` est valide et accessible.
-4. Le champ `ready` doit être `true` pour considérer l’environnement complet : API, base, session, OAuth et au moins un provider IA sont alors configurés.
-5. Si `ready` est `false`, l’API répond toujours avec les noms des contrôles manquants sans révéler les secrets. Corrigez uniquement les variables indiquées dans Netlify puis utilisez **Clear cache and deploy site**.
+Après publication, vérifiez `https://VOTRE_SITE.netlify.app/api/health`. Avec `?deep=1`, le contrôle base de données effectue une requête réelle. `ready: true` indique que l’API, la base, les sessions locales et au moins un provider IA sont configurés.
 
 ## Base de données
 
-Après avoir créé la base MySQL compatible, exécutez les migrations depuis un environnement qui possède `DATABASE_URL` :
+Pour une base de développement locale (la production Netlify applique automatiquement le
+journal après son préflight) :
 
 ```bash
 pnpm db:migrate
 ```
 
-La migration `drizzle/0009_real_deployments.sql` ajoute les métadonnées de publication aux projets.
+Les Functions Netlify ont des limites de durée. Pour des générations IA longues ou du SSE intensif, préférez un runtime Node persistant (Render, Railway, Fly.io ou VPS).
 
-## Limites Netlify à connaître
+## Pièces jointes privées
 
-Les Functions ont des limites de durée et de mémoire. Les opérations IA longues et le SSE peuvent être limités par le plan Netlify. Si les générations longues sont interrompues malgré une configuration correcte, le backend doit être déplacé vers un runtime Node persistant (Render, Railway, Fly.io ou VPS), tout en conservant le frontend Netlify.
+Les images envoyées en JSON base64 sont limitées à **4 Mio** afin que l’encodage et l’enveloppe
+JSON restent sous la limite de requête tamponnée documentée par [Netlify Functions](https://docs.netlify.com/build/functions/configuration/).
+Les nouveaux octets sont conservés dans `attachments.fileData` (`MEDIUMBLOB`) chez Aiven; le
+stockage `FILE_STORAGE_DIR` ne sert qu’à relire les anciens enregistrements locaux. Le chemin
+HTTP `/api/attachments/:id` continue de vérifier la session et le propriétaire avant de renvoyer
+les octets privés.
