@@ -42,7 +42,7 @@ async function main() {
 
   try {
     if (
-      await usersTableExists(statement => database.$client.query(statement))
+      await usersTableExists(statement => database.execute(sql.raw(statement)))
     ) {
       const duplicateEmailGroups = await countRows(
         database,
