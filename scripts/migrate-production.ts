@@ -1,13 +1,53 @@
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import { getDb } from "../server/db";
-import { usersTableExists } from "../server/_core/mysql-migration-preflight";
+import {
+  mysqlRows,
+  selectedDatabaseName,
+  usersTableExists,
+} from "../server/_core/mysql-migration-preflight";
 
 type CountRow = { rowCount: number | string };
 
 function firstRows<T>(result: unknown): T[] {
-  if (!Array.isArray(result) || !Array.isArray(result[0])) return [];
-  return result[0] as T[];
+  return mysqlRows<T>(result);
+}
+
+function safeMysqlDiagnostics(error: unknown): string[] {
+  const diagnostics: string[] = [];
+  const seen = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) {
+      break;
+    }
+    seen.add(current);
+    const details = current as Record<string, unknown>;
+
+    if (
+      typeof details.code === "string" &&
+      /^[A-Z0-9_]{1,64}$/.test(details.code)
+    ) {
+      diagnostics.push(`code=${details.code}`);
+    }
+    if (
+      typeof details.errno === "number" &&
+      Number.isSafeInteger(details.errno)
+    ) {
+      diagnostics.push(`errno=${details.errno}`);
+    }
+    if (
+      typeof details.sqlState === "string" &&
+      /^[A-Z0-9]{5}$/.test(details.sqlState)
+    ) {
+      diagnostics.push(`sqlState=${details.sqlState}`);
+    }
+
+    current = details.cause;
+  }
+
+  return [...new Set(diagnostics)];
 }
 
 async function countRows(
@@ -41,9 +81,15 @@ async function main() {
     );
 
   try {
-    if (
-      await usersTableExists(statement => database.execute(sql.raw(statement)))
-    ) {
+    const query = (statement: string) => database.execute(sql.raw(statement));
+    const selectedDatabase = await selectedDatabaseName(query);
+    if (!selectedDatabase) {
+      throw new Error(
+        "DATABASE_URL did not select a MySQL database. Include the database name in the URL path; no schema changes were applied."
+      );
+    }
+
+    if (await usersTableExists(query)) {
       const duplicateEmailGroups = await countRows(
         database,
         sql`SELECT COUNT(*) AS rowCount FROM (
@@ -69,8 +115,12 @@ async function main() {
 }
 
 main().catch(error => {
+  const diagnostics = safeMysqlDiagnostics(error);
+  const diagnosticSuffix = diagnostics.length
+    ? ` (${diagnostics.join(", ")})`
+    : "";
   console.error(
-    "[Database] Production migration failed:",
+    `[Database] Production migration failed${diagnosticSuffix}:`,
     error instanceof Error ? error.message : "unknown error"
   );
   process.exitCode = 1;
