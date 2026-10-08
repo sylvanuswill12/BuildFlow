@@ -6,13 +6,20 @@ Cette version est autonome : le frontend Vite est publié dans `dist/public` et 
 
 Ajoutez les valeurs suivantes dans **Project configuration → Environment variables** ; ne les mettez jamais dans Git ou dans l’archive :
 
-| Groupe | Variables | Utilité |
-|---|---|---|
-| Session locale | `APP_SESSION_SECRET`, `ADMIN_EMAILS` (facultatif) | Cookies et rôles locaux. |
-| Base | `DATABASE_URL` | Comptes, projets, crédits et déploiements persistants. |
-| IA | Une clé de provider, par exemple `OPENAI_API_KEY`; ou `OMNIROUTE_API_BASE_URL` et `OMNIROUTE_API_KEY` pour OmniRoute | Génération et modifications IA. L’URL OmniRoute doit être accessible en HTTPS depuis les Functions et se terminer par `/v1`; les deux variables restent côté serveur. |
-| Facturation facultative | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Paiements et webhooks Stripe. |
-| Publication facultative | `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID` | Publication vers Netlify depuis BuildFlow. |
+| Groupe                  | Variables                                                                                                            | Utilité                                                                                                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session locale          | `APP_SESSION_SECRET`, `ADMIN_EMAILS` (facultatif)                                                                    | Cookies et rôles locaux.                                                                                                                                              |
+| Base                    | `DATABASE_URL`                                                                                                       | Comptes, projets, crédits et déploiements persistants.                                                                                                                |
+| IA                      | Une clé de provider, par exemple `OPENAI_API_KEY`; ou `OMNIROUTE_API_BASE_URL` et `OMNIROUTE_API_KEY` pour OmniRoute | Génération et modifications IA. L’URL OmniRoute doit être accessible en HTTPS depuis les Functions et se terminer par `/v1`; les deux variables restent côté serveur. |
+| Facturation facultative | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`                                                                         | Paiements et webhooks Stripe.                                                                                                                                         |
+| Publication facultative | `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`                                                                              | Publication vers Netlify depuis BuildFlow.                                                                                                                            |
+
+Le normaliseur traduit le `ssl-mode` Aiven en options TLS `mysql2` côté serveur. Selon la
+[documentation Aiven](https://aiven.io/docs/platform/concepts/tls-ssl-certificates),
+`ssl-mode=REQUIRED` chiffre la connexion mais ne vérifie pas le certificat du serveur; c’est le
+mode de l’URI Aiven utilisée actuellement. Pour vérifier aussi l’identité du serveur, utilisez
+`ssl-mode=VERIFY_IDENTITY` avec l’option `ssl` JSON de `mysql2` contenant le certificat CA Aiven;
+les modes `VERIFY_CA` et `VERIFY_IDENTITY` refusent de démarrer sans ce CA.
 
 `APP_SESSION_SECRET` doit faire au moins 32 caractères ; générez-le par exemple avec `openssl rand -base64 48`.
 
